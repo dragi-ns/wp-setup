@@ -11,6 +11,10 @@
             - `wp-content`
             - `wp-includes`
             - `wp-admin`
+        - We need to check if the directory already contains .lando.yml file
+            - If it does contain the file, we will ask the user if they want to overwrite it
+                - If the user wants to overwrite it, we will create a new one (steps below)
+                - If the user does not want to overwrite it, we will exit the script
         - We will get the project name from the directory name, but the user will be asked to confirm it
     - Files are stored in a GitHub repository (defaults to our theme repository):
         - If the script is not run from the project directory, the user will be asked to provide the GitHub repository URL

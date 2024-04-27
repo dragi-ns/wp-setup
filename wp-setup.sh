@@ -59,6 +59,126 @@ set_project_name() {
     echo "The project name is $project_name."
 }
 
+# Function to import SQL file
+import_sql_file() {
+    # Check if the Lando containers for the project are running
+    if [ "$(lando list --format json | jq --arg project_name "${project_name//[-_]/}" 'any(.[]; .app == $project_name)')" != "true" ]; then
+        echo "The Lando containers for the project are not running. Starting the Lando containers..."
+        lando start
+    fi
+
+    # Check if there is a .sql file in the project directory
+    sql_file=$(find . -maxdepth 1 -name "*.sql" -print -quit)
+
+    if [ -n "$sql_file" ]; then
+        echo "A .sql file was found in the project directory: $sql_file"
+        echo "Do you want to use this file? (yes/no)"
+        read use_sql_file
+        if [ "$use_sql_file" = "yes" ]; then
+            sql_file_path=$sql_file
+        fi
+    fi
+
+    # If the user did not want to use the .sql file in the project directory, or if no .sql file was found, prompt the user to specify the path of the SQL file to import
+    if [ -z "$sql_file_path" ]; then
+        echo "Please specify the path of the SQL file to import (default: none):"
+        read sql_file_path
+    fi
+
+    # Check if the SQL file path is not empty
+    if [ -n "$sql_file_path" ]; then
+        # Check if the SQL file exists and is readable
+        if [ -f "$sql_file_path" ] && [ -r "$sql_file_path" ]; then
+            # Check if the file is a .sql file
+            if [[ "$sql_file_path" == *.sql ]]; then
+                cp "$sql_file_path" .
+
+                # Use `lando db-import` to import the SQL file
+                lando wp db drop --yes
+                lando wp db create
+                lando db-import "$(basename "$sql_file_path")" --no-wipe
+
+                # Delete the SQL file after the import
+                rm "$(basename "$sql_file_path")"
+
+                # Get the table prefix from the .lando.yml file
+                table_prefix=$(grep 'TABLE_PREFIX:' .lando.yml | sed 's/TABLE_PREFIX: //')
+
+                # Get the old domain from the options table
+                old_domain="$(lando wp db query "SELECT option_value FROM ${table_prefix}options WHERE option_name = 'siteurl'" --skip-column-names --silent | tr -d '[:space:]')"
+                new_domain="http://$project_name.lndo.site"
+                echo "Replacing '$old_domain' with '$new_domain' in the database..."
+
+                # Use `lando wp search-replace` to replace the old domain with the new domain
+                lando wp search-replace "$old_domain" "$new_domain"
+            else
+                echo "The file is not a .sql file. Please provide a valid path."
+            fi
+        else
+            echo "The SQL file does not exist or is not readable. Please provide a valid path."
+        fi
+    fi
+}
+
+check_lando_file_exists() {
+    if [ -f ".lando.yml" ]; then
+        echo "A .lando.yml file already exists in the project directory. Do you want to overwrite it? (yes/no)"
+        read overwrite_lando_file
+        if [ "$overwrite_lando_file" = "yes" ]; then
+            rm .lando.yml
+            return 1
+        else
+            return 0
+        fi
+    else
+        return 1
+    fi
+}
+
+# Function to create .lando.yml file
+create_lando_file() {
+    cat << EOF > .lando.yml
+name: $project_name
+recipe: wordpress
+config:
+  webroot: .
+  php: $php_version
+  database: mysql:$db_version
+services:
+  appserver:
+    scanner: false
+    overrides:
+      environment:
+        DB_USER: $db_user
+        DB_PASSWORD: $db_password
+        DB_NAME: $db_name
+        DB_HOST: database
+        TABLE_PREFIX: $table_prefix
+    build_as_root:
+      - curl -fsSL https://deb.nodesource.com/setup_$node_version.x | bash -
+      - apt-get install -y nodejs
+      - if [ -d "wp-content/themes/$project_name" ]; then cd "wp-content/themes/$project_name"; if [ -f "package.json" ]; then npm install; fi; if [ -f "composer.json" ]; then composer install; fi; cd ../../../; fi
+    run:
+      - if [ ! -d "wp-content" ] || [ ! -d "wp-includes" ] || [ ! -d "wp-admin" ]; then wp core download; fi
+      - if [ ! -f "wp-config.php" ]; then wp config create --dbname="$db_name" --dbuser="$db_user" --dbpass="$db_password" --dbhost="database" --dbprefix="$table_prefix"; fi
+  database:
+    creds:
+      user: $db_user
+      password: $db_password
+      database: $db_name
+  pma:
+    type: phpmyadmin
+tooling:
+  node:
+    service: appserver
+  npm:
+    service: appserver
+proxy:
+  pma:
+    - pma.$project_name.lndo.site
+EOF
+}
+
 # Check if the script is run from a WordPress project directory
 if check_any_wordpress_directory; then
     set_project_name
@@ -73,6 +193,11 @@ else
         rm -rf "$(basename "$repo_url" .git)"
         exit 1
     fi
+fi
+
+if check_lando_file_exists; then
+    import_sql_file
+    exit 0
 fi
 
 # Prompt the user to specify PHP version, database version, Node.js version, database username, password, name, and table prefix
@@ -112,116 +237,14 @@ echo "Please specify the table prefix (default: wp_):"
 read table_prefix
 table_prefix=${table_prefix:-wp_}
 
-# Function to create .lando.yml file
-create_lando_file() {
-    cat << EOF > .lando.yml
-name: $project_name
-recipe: wordpress
-config:
-  webroot: .
-  php: $php_version
-  database: mysql:$db_version
-services:
-  appserver:
-    scanner: false
-    overrides:
-      environment:
-        DB_USER: $db_user
-        DB_PASSWORD: $db_password
-        DB_NAME: $db_name
-        DB_HOST: database
-        TABLE_PREFIX: $table_prefix
-    build_as_root:
-      - curl -fsSL https://deb.nodesource.com/setup_$node_version.x | bash -
-      - apt-get install -y nodejs
-      - if [ -d "wp-content/themes/$project_name" ]; then cd "wp-content/themes/$project_name"; if [ -f "package.json" ]; then npm install; fi; if [ -f "composer.json" ]; then composer install; fi; cd ../../../; fi
-  database:
-    creds:
-      user: $db_user
-      password: $db_password
-      database: $db_name
-  pma:
-    type: phpmyadmin
-tooling:
-  node:
-    service: appserver
-  npm:
-    service: appserver
-proxy:
-  pma:
-    - pma.$project_name.lndo.site
-EOF
-}
-
+# Create .lando.yml file
 create_lando_file
 
 # Start up Lando
-lando start
-
-# Download WordPress core
-if ! check_all_wordpress_directories; then
-    lando wp core download
+if ! lando start; then
+    echo "Lando failed to start. Exiting the script."
+    exit 1
 fi
 
-# Check if the wp-config.php file exists and handle it accordingly
-if [ -f "./wp-config.php" ]; then
-    echo "The wp-config.php file exists. Do you want to overwrite it? (yes/no)"
-    read overwrite
-    if [ "$overwrite" = "yes" ]; then
-        rm wp-config.php
-        # Use `lando wp config create` to create `wp-config.php`
-        lando wp config create --dbname="$db_name" --dbuser="$db_user" --dbpass="$db_password" --dbhost="database" --dbprefix="$table_prefix"
-    fi
-else
-    # Use `lando wp config create` to create `wp-config.php`
-    lando wp config create --dbname="$db_name" --dbuser="$db_user" --dbpass="$db_password" --dbhost="database" --dbprefix="$table_prefix"
-fi
-
-# Check if there is a .sql file in the project directory
-sql_file=$(find . -maxdepth 1 -name "*.sql" -print -quit)
-
-if [ -n "$sql_file" ]; then
-    echo "A .sql file was found in the project directory: $sql_file"
-    echo "Do you want to use this file? (yes/no)"
-    read use_sql_file
-    if [ "$use_sql_file" = "yes" ]; then
-        sql_file_path=$sql_file
-    fi
-fi
-
-# If the user did not want to use the .sql file in the project directory, or if no .sql file was found, prompt the user to specify the path of the SQL file to import
-if [ -z "$sql_file_path" ]; then
-    echo "Please specify the path of the SQL file to import (default: none):"
-    read sql_file_path
-fi
-
-# Check if the SQL file path is not empty
-if [ -n "$sql_file_path" ]; then
-    # Check if the SQL file exists and is readable
-    if [ -f "$sql_file_path" ] && [ -r "$sql_file_path" ]; then
-        # Check if the file is a .sql file
-        if [[ "$sql_file_path" == *.sql ]]; then
-            cp "$sql_file_path" .
-
-            # Use `lando db-import` to import the SQL file
-            lando wp db drop --yes
-            lando wp db create
-            lando db-import "$(basename "$sql_file_path")" --no-wipe
-
-            # Delete the SQL file after the import
-            rm "$(basename "$sql_file_path")"
-
-            # Get the old domain from the options table
-            old_domain="$(lando wp db query "SELECT option_value FROM ${table_prefix}options WHERE option_name = 'siteurl'" --skip-column-names --silent | tr -d '[:space:]')"
-            new_domain="http://$project_name.lndo.site"
-            echo "Replacing '$old_domain' with '$new_domain' in the database..."
-
-            # Use `lando wp search-replace` to replace the old domain with the new domain
-            lando wp search-replace "$old_domain" "$new_domain"
-        else
-            echo "The file is not a .sql file. Please provide a valid path."
-        fi
-    else
-        echo "The SQL file does not exist or is not readable. Please provide a valid path."
-    fi
-fi
+# Import SQL file
+import_sql_file
