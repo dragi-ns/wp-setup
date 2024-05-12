@@ -8,15 +8,13 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Check if Docker is installed
-if ! command -v docker &> /dev/null
-then
+if ! command -v docker &> /dev/null; then
     echo -e "Docker ${RED}${BOLD}is not installed${NC}. Please install Docker and try again."
     exit 1
 fi
 
 # Check if Lando is installed
-if ! command -v lando &> /dev/null
-then
+if ! command -v lando &> /dev/null; then
     echo -e "Lando ${RED}${BOLD}is not installed${NC}. Please install Lando and try again."
     exit 1
 fi
@@ -41,7 +39,7 @@ check_all_wordpress_directories() {
 
 # Function to clone a repository
 clone_repository() {
-    read -p "Please provide the GitHub repository URL: " repo_url
+    read -e -p "Please provide the GitHub repository URL: " repo_url
     echo -e "Cloning the repository from ${BOLD}'$repo_url'${NC}..."
     if ! git clone "$repo_url"; then
         echo -e "${RED}${BOLD}Failed to clone the repository.${NC} Please check the URL and try again."
@@ -54,10 +52,10 @@ clone_repository() {
 # Function to set the project name
 set_project_name() {
     echo -e "The current directory name is ${BOLD}$(basename "$(pwd)")${NC}."
-    read -p "This will be used as the project name, please confirm (yes/no) [yes]: " confirm
+    read -e -p "This will be used as the project name, please confirm (yes/no) [yes]: " confirm
     if [ "$confirm" = "no" ] || [ "$confirm" = "n" ]; then
         while true; do
-            read -p "Please provide the project name: " project_name
+            read -e -p "Please provide the project name: " project_name
 
             if [[ "$project_name" =~ ^[a-zA-Z_][a-zA-Z0-9_-]{3,15}$ ]]; then
                 break
@@ -79,20 +77,29 @@ import_sql_file() {
         echo -e "${GREEN}${BOLD}Lando containers started successfully${NC}."
     fi
 
+    echo -e "Checking for an SQL file to import..."
+
     # Check if there is a .sql file in the project directory
     sql_file=$(find . -maxdepth 1 -name "*.sql" -print -quit)
 
     if [ -n "$sql_file" ]; then
         echo -e "A .sql file was found in the project directory: ${BOLD}$sql_file${NC}"
-        read -p "Do you want to use this file? (yes/no) [no]: " use_sql_file
+        read -e -p "Do you want to use this file? (yes/no) [no]: " use_sql_file
         if [ "$use_sql_file" = "yes" ] || [ "$use_sql_file" = "y" ]; then
             sql_file_path=$sql_file
         fi
     fi
 
+    # Initialize a flag to check if the SQL file was copied from a different directory
+    copied_sql_file=false
+
     # If the user did not want to use the .sql file in the project directory, or if no .sql file was found, prompt the user to specify the path of the SQL file to import
     if [ -z "$sql_file_path" ]; then
-        read -p "Please specify the path of the SQL file to import (default: none): " sql_file_path
+        if command -v zenity &> /dev/null; then
+            sql_file_path=$(zenity --file-selection --title="Select the SQL file to import" --file-filter="SQL files (sql) | *.sql")
+        else
+            read -e -p "Please specify the path of the SQL file to import (default: none): " sql_file_path
+        fi
     fi
 
     # Check if the SQL file path is not empty
@@ -101,17 +108,23 @@ import_sql_file() {
         if [ -f "$sql_file_path" ] && [ -r "$sql_file_path" ]; then
             # Check if the file is a .sql file
             if [[ "$sql_file_path" == *.sql ]]; then
-                echo "Copying the SQL file to the project directory..."
-                cp "$sql_file_path" .
+                # Check if the SQL file is not in the project directory
+                if [[ "$sql_file_path" != ./*.sql ]]; then
+                    echo "Copying the SQL file to the project directory..."
+                    cp "$sql_file_path" .
+                    copied_sql_file=true
+                fi
 
                 # Use `lando db-import` to import the SQL file
                 lando wp db drop --yes
                 lando wp db create
                 lando db-import "$(basename "$sql_file_path")" --no-wipe
 
-                # Delete the SQL file after the import
-                echo "Deleting the SQL file..."
-                rm "$(basename "$sql_file_path")"
+                # Delete the SQL file after the import if it was copied from a different directory
+                if $copied_sql_file; then
+                    echo "Deleting the SQL file..."
+                    rm "$(basename "$sql_file_path")"
+                fi
 
                 # Get the table prefix from the .lando.yml file
                 echo "Getting the table prefix from the .lando.yml file..."
@@ -123,10 +136,10 @@ import_sql_file() {
                 new_domain="http://$project_name.lndo.site"
 
                 echo -e "Planning to replace '${BOLD}$old_domain${NC}' with '${BOLD}$new_domain${NC}' in the database..."
-                read -p "Do you want to proceed with this replacement? (yes/no) [yes]: " confirm_replace
+                read -e -p "Do you want to proceed with this replacement? (yes/no) [yes]: " confirm_replace
                 if [ "$confirm_replace" = "no" ] || [ "$confirm_replace" = "n" ]; then
-                    read -p "Please provide the search string: " search_string
-                    read -p "Please provide the replace string: " replace_string
+                    read -e -p "Please provide the search string: " search_string
+                    read -e -p "Please provide the replace string: " replace_string
 
                     echo -e "Replacing the search string '${BOLD}$search_string${NC}' with the replace string '${BOLD}$replace_string${NC}' in the database..."
                     lando wp search-replace "$search_string" "$replace_string"
@@ -152,7 +165,7 @@ check_lando_file_exists() {
         return 1
     fi
 
-    read -p "A .lando.yml file already exists in the project directory. Do you want to overwrite it? (yes/no) [no]: " overwrite_lando_file
+    read -e -p "A .lando.yml file already exists in the project directory. Do you want to overwrite it? (yes/no) [no]: " overwrite_lando_file
     if [ "$overwrite_lando_file" = "yes" ] || [ "$overwrite_lando_file" = "y" ]; then
         rm .lando.yml
         return 1
@@ -194,14 +207,23 @@ services:
       database: $db_name
   pma:
     type: phpmyadmin
+  mail:
+    type: mailhog
+    portforward: true
+    hogfrom:
+      - appserver
 tooling:
   node:
     service: appserver
   npm:
     service: appserver
+  npx:
+    service: appserver
 proxy:
   pma:
     - pma.$project_name.lndo.site
+  mail:
+    - mail.$project_name.lndo.site
 EOF
     echo -e "${GREEN}${BOLD}.lando.yml file created successfully.${NC}"
 }
@@ -229,7 +251,7 @@ fi
 
 # Prompt the user to specify PHP version
 while true; do
-    read -p "Please specify the PHP version (default: 8.3): " php_version
+    read -e -p "Please specify the PHP version (default: 8.3): " php_version
     php_version=${php_version:-8.3}
 
     if [[ "$php_version" =~ ^(7\.3|7\.4|8\.[0-3])$ ]]; then
@@ -241,7 +263,7 @@ done
 
 # Prompt the user to specify the database version
 while true; do
-    read -p "Please specify the database version (default: 8.0): " db_version
+    read -e -p "Please specify the database version (default: 8.0): " db_version
     db_version=${db_version:-8.0}
 
     if [[ "$db_version" =~ ^(5\.5|5\.6|5\.7|8\.0)$ ]]; then
@@ -251,12 +273,12 @@ while true; do
 done
 
 # Prompt the user to specify the Node.js version
-read -p "Please specify the Node.js version (default: 20): " node_version
+read -e -p "Please specify the Node.js version (default: 20): " node_version
 node_version=${node_version:-20}
 
 # Prompt the user to specify the database username
 while true; do
-    read -rp "Please specify the database username (default: user): " db_user
+    read -e -rp "Please specify the database username (default: user): " db_user
     db_user=${db_user:-user}
 
     if [[ "$db_user" != "root" && "$db_user" =~ ^[a-zA-Z_$][a-zA-Z0-9_$-]{0,15}$ ]]; then
@@ -267,7 +289,7 @@ done
 
 # Prompt the user to specify the database password
 while true; do
-    read -p "Please specify the database password (default: user): " db_password
+    read -e -p "Please specify the database password (default: user): " db_password
     db_password=${db_password:-user}
 
     if [[ ${#db_password} -ge 4 ]]; then
@@ -278,7 +300,7 @@ done
 
 # Prompt the user to specify the database name
 while true; do
-    read -p "Please specify the database name (default: wordpress): " db_name
+    read -e -p "Please specify the database name (default: wordpress): " db_name
     db_name=${db_name:-wordpress}
 
     if [[ "$db_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,63}$ ]]; then
@@ -289,7 +311,7 @@ done
 
 # Prompt the user to specify the table prefix
 while true; do
-    read -p "Please specify the table prefix (default: wp_): " table_prefix
+    read -e -p "Please specify the table prefix (default: wp_): " table_prefix
     table_prefix=${table_prefix:-wp_}
 
     if [[ "$table_prefix" =~ ^[a-zA-Z_][a-zA-Z0-9_]*_$ ]]; then
