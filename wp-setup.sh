@@ -142,11 +142,11 @@ import_sql_file() {
                     read -e -p "Please provide the replace string: " replace_string
 
                     echo -e "Replacing the search string '${BOLD}$search_string${NC}' with the replace string '${BOLD}$replace_string${NC}' in the database..."
-                    lando wp search-replace "$search_string" "$replace_string"
+                    lando wp search-replace "$search_string" "$replace_string" --all-tables
                     echo -e "${GREEN}${BOLD}Search and replace completed successfully.${NC}"
                 else
                     echo -e "Replacing the old domain '${BOLD}$old_domain${NC}' with the new domain '${BOLD}$new_domain${NC}' in the database..."
-                    lando wp search-replace "$old_domain" "$new_domain"
+                    lando wp search-replace "$old_domain" "$new_domain" --all-tables
                     echo -e "${GREEN}${BOLD}Search and replace completed successfully.${NC}"
                 fi
             else
